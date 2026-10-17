@@ -34,9 +34,11 @@ public class Main implements IXposedHookLoadPackage {
     private static final String TARGET = "org.telegram.messenger.web";
     private static final String LOG_PRIVATE = "/data/data/org.telegram.messenger.web/files/tgprobe.log";
     private static final String LOG_SDCARD = "/sdcard/Download/tgprobe.log";
-    private static final String CONF_PATH = "/sdcard/Download/tgprobe.conf";
+    private static final String CONF_PRIVATE = "/data/data/org.telegram.messenger.web/files/tgprobe.conf";
+    private static final String CONF_SDCARD = "/sdcard/Download/tgprobe.conf";
 
     private static volatile boolean cfgEnabled = true;
+    private static volatile boolean cfgLogHidden = false;
     private static volatile String watchUser = "";
 
     private static final Object LOG_LOCK = new Object();
@@ -97,10 +99,10 @@ public class Main implements IXposedHookLoadPackage {
                     && (watchUser.equalsIgnoreCase(username) || watchUser.equals(String.valueOf(id)));
             boolean visible = phone != null && !phone.isEmpty();
 
-            // 默认只记录"号码对我可见"的用户; watch 指定的用户无论可见与否都记
-            if (!visible && !isWatch) return;
+            // 默认只记录"号码对我可见"的用户; watch 指定或 log_hidden 打开时记录全部
+            if (!visible && !isWatch && !cfgLogHidden) return;
 
-            String key = id + "|" + phone + "|" + contact + "|" + mutual + "|" + fromCache;
+            String key = id + "|" + (phone == null ? "" : phone);
             if (!seen.add(key)) return;
             if (seen.size() > 4000) seen.clear();
 
@@ -132,28 +134,35 @@ public class Main implements IXposedHookLoadPackage {
     }
 
     private void loadConfig() {
-        try {
-            File f = new File(CONF_PATH);
-            if (!f.exists()) return;
-            BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(f), "UTF-8"));
-            String line;
-            while ((line = br.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) continue;
-                int eq = line.indexOf('=');
-                if (eq <= 0) continue;
-                String k = line.substring(0, eq).trim();
-                String v = line.substring(eq + 1).trim();
-                if ("enabled".equals(k)) {
-                    cfgEnabled = !"0".equals(v);
-                } else if ("watch".equals(k)) {
-                    watchUser = v;
+        String[] paths = {CONF_PRIVATE, CONF_SDCARD};
+        for (String p : paths) {
+            try {
+                File f = new File(p);
+                if (!f.exists()) continue;
+                BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(f), "UTF-8"));
+                String line;
+                while ((line = br.readLine()) != null) {
+                    line = line.trim();
+                    if (line.isEmpty() || line.startsWith("#")) continue;
+                    int eq = line.indexOf('=');
+                    if (eq <= 0) continue;
+                    String k = line.substring(0, eq).trim();
+                    String v = line.substring(eq + 1).trim();
+                    if ("enabled".equals(k)) {
+                        cfgEnabled = !"0".equals(v);
+                    } else if ("watch".equals(k)) {
+                        watchUser = v;
+                    } else if ("log_hidden".equals(k)) {
+                        cfgLogHidden = !"0".equals(v);
+                    }
                 }
+                br.close();
+                log("配置来源: " + p);
+                break;
+            } catch (Throwable ignored) {
             }
-            br.close();
-        } catch (Throwable ignored) {
         }
-        log("配置: enabled=" + cfgEnabled + " watch=" + watchUser);
+        log("配置: enabled=" + cfgEnabled + " watch=" + watchUser + " log_hidden=" + cfgLogHidden);
     }
 
     private static void log(String msg) {
