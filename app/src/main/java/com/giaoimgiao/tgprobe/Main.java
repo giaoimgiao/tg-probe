@@ -1,5 +1,12 @@
 package com.giaoimgiao.tgprobe;
 
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.os.Handler;
+import android.os.Looper;
+import android.widget.ScrollView;
+import android.widget.TextView;
+
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedHelpers;
@@ -12,22 +19,19 @@ import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Date;
 import java.util.Locale;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * TG Probe
+ * TG Probe v2.0
  * 目标: org.telegram.messenger.web
  *
- * 观测点: MessagesController.putUsers(ArrayList, boolean)
- * 该方法是客户端接收 User 对象的汇聚点, 参数即服务端解密后的 TL 对象,
- * 因此这里读到的 phone 值就是服务端实际下发的值(空 = 未下发)。
+ * 1) ProfileActivity.onResume → 弹出面板展示当前用户号码可见性
+ * 2) MessagesController.putUsers → 可选批量观测(默认关, log_bulk=1 打开)
  *
- * 日志: TG私有目录 files/tgprobe.log (+ /sdcard/Download/tgprobe.log)
- * 配置: /sdcard/Download/tgprobe.conf
+ * 数据来源: 服务端下发的 TLRPC.User.phone (空 = 未下发)
+ * 日志: /data/data/org.telegram.messenger.web/files/tgprobe.log
+ * 配置: 私有目录 tgprobe.conf 优先, /sdcard/Download/tgprobe.conf 作为补充
  */
 public class Main implements IXposedHookLoadPackage {
 
@@ -38,27 +42,138 @@ public class Main implements IXposedHookLoadPackage {
     private static final String CONF_SDCARD = "/sdcard/Download/tgprobe.conf";
 
     private static volatile boolean cfgEnabled = true;
-    private static volatile boolean cfgLogHidden = false;
+    private static volatile boolean cfgPopup = true;
+    private static volatile boolean cfgLogBulk = false;
     private static volatile String watchUser = "";
 
     private static final Object LOG_LOCK = new Object();
-    private static final Set<String> seen = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+
+    // 弹窗去重
+    private static long lastShownId = 0;
+    private static long lastShownTs = 0;
 
     @Override
     public void handleLoadPackage(final XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         if (!TARGET.equals(lpparam.packageName)) return;
 
         loadConfig();
-        log("========== TGProbe 注入 ==========");
+        log("========== TGProbe v2.0 注入 ==========");
         log("process=" + lpparam.processName + " enabled=" + cfgEnabled
-                + " watch=" + (watchUser.isEmpty() ? "-" : watchUser));
+                + " popup=" + cfgPopup + " log_bulk=" + cfgLogBulk + " watch=" + watchUser);
 
-        try {
-            hookPutUsers(lpparam);
-        } catch (Throwable t) {
-            log("hook putUsers 异常: " + t);
+        if (cfgLogBulk || !watchUser.isEmpty()) {
+            try {
+                hookPutUsers(lpparam);
+            } catch (Throwable t) {
+                log("hook putUsers 异常: " + t);
+            }
+        }
+        if (TARGET.equals(lpparam.processName)) {
+            try {
+                hookProfileActivity(lpparam);
+            } catch (Throwable t) {
+                log("hook ProfileActivity 异常: " + t);
+            }
         }
     }
+
+    // ==================== 用户资料页 → 面板 ====================
+
+    private void hookProfileActivity(final XC_LoadPackage.LoadPackageParam lpparam) {
+        XposedHelpers.findAndHookMethod("org.telegram.ui.ProfileActivity",
+                lpparam.classLoader, "onResume", new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (!cfgEnabled || !cfgPopup) return;
+                        final Object fragment = param.thisObject;
+                        try {
+                            Object actObj = XposedHelpers.callMethod(fragment, "getParentActivity");
+                            if (!(actObj instanceof Activity)) return;
+
+                            Object full = XposedHelpers.callMethod(fragment, "getUserInfo");
+                            if (full == null) return;
+                            Object user = XposedHelpers.getObjectField(full, "user");
+                            if (user == null) return;
+
+                            final long id = XposedHelpers.getLongField(user, "id");
+                            if (id == 0) return;
+
+                            long now = System.currentTimeMillis();
+                            if (id == lastShownId && now - lastShownTs < 20000) return;
+                            lastShownId = id;
+                            lastShownTs = now;
+
+                            final String username = str(user, "username");
+                            final String phone = str(user, "phone");
+                            final boolean contact = bool(user, "contact");
+                            final boolean mutual = bool(user, "mutual_contact");
+                            final boolean bot = bool(user, "bot");
+                            final boolean visible = phone != null && !phone.isEmpty();
+
+                            log((visible ? "[公开] " : "[隐藏] ") + "id=" + id
+                                    + " user=" + (username == null ? "-" : "@" + username)
+                                    + " phone=" + (visible ? phone : "NULL")
+                                    + " contact=" + contact + " mutual=" + mutual);
+
+                            showPanel((Activity) actObj, id, username, phone, contact, mutual, bot);
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                });
+        log("hook ProfileActivity 完成");
+    }
+
+    private void showPanel(final Activity act, final long id, final String username,
+                           final String phone, final boolean contact,
+                           final boolean mutual, final boolean bot) {
+        final boolean visible = phone != null && !phone.isEmpty();
+
+        final StringBuilder sb = new StringBuilder();
+        sb.append("用户: ").append(username == null ? "(无用户名)" : "@" + username).append('\n');
+        sb.append("ID: ").append(id).append('\n');
+        sb.append("──────────────\n");
+        if (bot) {
+            sb.append("机器人账号: 无号码\n");
+        } else if (visible) {
+            sb.append("号码: 【公开可见】\n\n");
+            sb.append("手机号\n").append(phone).append('\n');
+        } else {
+            sb.append("号码: 【未公开】\n\n");
+            sb.append("服务端未下发 phone 字段\n");
+            sb.append("(对方设为\"我的联系人\"或\"不允许任何人\")\n");
+        }
+        sb.append("\n──────────────\n");
+        sb.append("在联系人: ").append(contact ? "是" : "否").append('\n');
+        sb.append("互加好友: ").append(mutual ? "是" : "否").append('\n');
+        sb.append("\n数据来源: User.phone (服务端下发值)");
+
+        Handler h = new Handler(Looper.getMainLooper());
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (act.isFinishing()) return;
+                    ScrollView sv = new ScrollView(act);
+                    TextView tv = new TextView(act);
+                    tv.setText(sb.toString());
+                    tv.setTextIsSelectable(true);
+                    tv.setTextSize(15);
+                    tv.setPadding(48, 32, 48, 32);
+                    sv.addView(tv);
+
+                    new AlertDialog.Builder(act)
+                            .setTitle(visible ? "TG Probe · 公开" : "TG Probe · 隐藏")
+                            .setView(sv)
+                            .setPositiveButton("关闭", null)
+                            .show();
+                } catch (Throwable t) {
+                    log("dialog 失败: " + t);
+                }
+            }
+        });
+    }
+
+    // ==================== 批量观测(可选) ====================
 
     private void hookPutUsers(final XC_LoadPackage.LoadPackageParam lpparam) {
         XC_MethodHook hook = new XC_MethodHook() {
@@ -77,7 +192,6 @@ public class Main implements IXposedHookLoadPackage {
                 }
             }
         };
-        // 多账号共用同一方法, class 级 hook 覆盖所有 MessagesController 实例
         XposedHelpers.findAndHookMethod("org.telegram.messenger.MessagesController",
                 lpparam.classLoader, "putUsers", ArrayList.class, boolean.class, hook);
         log("hook putUsers 完成");
@@ -94,17 +208,11 @@ public class Main implements IXposedHookLoadPackage {
             String phone = str(u, "phone");
             boolean contact = bool(u, "contact");
             boolean mutual = bool(u, "mutual_contact");
+            boolean visible = phone != null && !phone.isEmpty();
 
             boolean isWatch = !watchUser.isEmpty()
                     && (watchUser.equalsIgnoreCase(username) || watchUser.equals(String.valueOf(id)));
-            boolean visible = phone != null && !phone.isEmpty();
-
-            // 默认只记录"号码对我可见"的用户; watch 指定或 log_hidden 打开时记录全部
-            if (!visible && !isWatch && !cfgLogHidden) return;
-
-            String key = id + "|" + (phone == null ? "" : phone);
-            if (!seen.add(key)) return;
-            if (seen.size() > 4000) seen.clear();
+            if (!isWatch && !visible) return;
 
             log((isWatch ? "★" : " ") + " id=" + id
                     + " user=" + (username == null ? "-" : "@" + username)
@@ -114,6 +222,8 @@ public class Main implements IXposedHookLoadPackage {
         } catch (Throwable ignored) {
         }
     }
+
+    // ==================== 工具 ====================
 
     private static String str(Object o, String field) {
         try {
@@ -152,17 +262,18 @@ public class Main implements IXposedHookLoadPackage {
                         cfgEnabled = !"0".equals(v);
                     } else if ("watch".equals(k)) {
                         watchUser = v;
-                    } else if ("log_hidden".equals(k)) {
-                        cfgLogHidden = !"0".equals(v);
+                    } else if ("popup".equals(k)) {
+                        cfgPopup = !"0".equals(v);
+                    } else if ("log_bulk".equals(k)) {
+                        cfgLogBulk = !"0".equals(v);
                     }
                 }
                 br.close();
-                log("配置来源: " + p);
-                break;
             } catch (Throwable ignored) {
             }
         }
-        log("配置: enabled=" + cfgEnabled + " watch=" + watchUser + " log_hidden=" + cfgLogHidden);
+        log("配置: enabled=" + cfgEnabled + " popup=" + cfgPopup
+                + " log_bulk=" + cfgLogBulk + " watch=" + watchUser);
     }
 
     private static void log(String msg) {
