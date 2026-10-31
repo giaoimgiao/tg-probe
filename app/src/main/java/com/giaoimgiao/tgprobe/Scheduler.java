@@ -221,11 +221,48 @@ public class Scheduler {
         return t.getTimeInMillis();
     }
 
+    /** 今天还没签的账号（自动枚举所有已登录账号，key 用 UID 保证不会因换槽位而重复） */
     private static List<Integer> todoAccounts(Config.Job job) {
         List<Integer> out = new ArrayList<>();
         String day = day();
-        for (Integer acct : job.accountList()) {
-            if (!isDone(markKey(day, job, acct))) out.add(acct);
+        List<Acc> accs = activatedAccounts();
+        for (int i = 0; i < accs.size(); i++) {
+            Acc a = accs.get(i);
+            if (!isDone(markKey(day, job, a.uid))) out.add(a.index);
+        }
+        return out;
+    }
+
+    private static class Acc {
+        int index;
+        long uid;
+    }
+
+    /** 自动枚举所有已登录账号（用 UserConfig.Instance 静态数组，不创建假实例） */
+    private static List<Acc> activatedAccounts() {
+        List<Acc> out = new ArrayList<>();
+        try {
+            Class<?> uc = XposedHelpers.findClass(
+                    "org.telegram.messenger.UserConfig", cl);
+            Object arr = XposedHelpers.getStaticObjectField(uc, "Instance");
+            if (!(arr instanceof Object[])) return out;
+            Object[] slots = (Object[]) arr;
+            for (int i = 0; i < slots.length; i++) {
+                Object inst = slots[i];
+                if (inst == null) continue;
+                Object act = XposedHelpers.callMethod(inst, "isClientActivated");
+                if (!Boolean.TRUE.equals(act)) continue;
+                Object u = XposedHelpers.callMethod(inst, "getCurrentUser");
+                if (u == null) continue;
+                long uid = XposedHelpers.getLongField(u, "id");
+                if (uid == 0) continue;
+                Acc a = new Acc();
+                a.index = i;
+                a.uid = uid;
+                out.add(a);
+            }
+        } catch (Throwable t) {
+            Main.log("[sched] 枚举账号失败: " + t);
         }
         return out;
     }
@@ -236,7 +273,7 @@ public class Scheduler {
         Config c = loadConfig();
         if (!c.enabled || !c.signEnabled) return;
 
-        List<Integer> todo = todoAccounts(job);
+        List<Acc> todo = todoAccounts(job);
         if (todo.isEmpty()) {
             schedule(job);
             return;
@@ -254,32 +291,28 @@ public class Scheduler {
 
         for (int i = 0; i < todo.size(); i++) {
             int acct = todo.get(i);
+            long uid = uidOf(acct);
 
-            if (!accountActivated(acct)) {
-                Main.log("[sched] acct=" + acct + " 未登录，跳过");
-                continue;
-            }
             if (!accountConnected(acct)) {
-                Main.log("[sched] acct=" + acct + " 连接未就绪，稍后重试");
+                Main.log("[sched] acct=" + acct + " uid=" + uid + " 连接未就绪，稍后重试");
                 needRetry = true;
                 continue;
             }
 
             long dialogId = resolveDialogId(acct, job.chat);
             if (dialogId == 0) {
-                Main.log("[sched] acct=" + acct + " 会话缓存里还没有 @" + job.chat
-                        + "，稍等再试（若是全新账号，请先打开这个群一次）");
+                Main.log("[sched] acct=" + acct + " uid=" + uid + " 会话缓存里还没有 @" + job.chat
+                        + "，稍等再试（全新账号请先打开这个群一次）");
                 needSoftRetry = true;
                 continue;
             }
 
-            String key = markKey(day(), job, acct);
-            Main.log("[sched] 发送 acct=" + acct + " chat=@" + job.chat
+            String key = markKey(day(), job, uid);
+            Main.log("[sched] 发送 acct=" + acct + " uid=" + uid + " chat=@" + job.chat
                     + " dialogId=" + dialogId + " text=" + job.text);
 
             boolean ok = AutoTask.sendByDialog(cl, acct, dialogId, job.text);
             if (ok) {
-                // 关键：提交成功就立刻落盘，避免切号/重进 TG 时重复发送
                 markDone(key);
 
                 Waiting w = new Waiting();
@@ -307,10 +340,25 @@ public class Scheduler {
         } else if (needSoftRetry) {
             backoff(job, "会话缓存未就绪", true);
         } else if (!sentAny) {
-            // 全部被跳过（账号未登录等），排到明天
             schedule(job);
         }
-        // sentAny 且无 needRetry：等回执，回执到来自动排明天
+    }
+
+    private static long uidOf(int acct) {
+        try {
+            Class<?> uc = XposedHelpers.findClass(
+                    "org.telegram.messenger.UserConfig", cl);
+            Object arr = XposedHelpers.getStaticObjectField(uc, "Instance");
+            if (arr instanceof Object[]) {
+                Object[] slots = (Object[]) arr;
+                if (acct >= 0 && acct < slots.length && slots[acct] != null) {
+                    Object u = XposedHelpers.callMethod(slots[acct], "getCurrentUser");
+                    if (u != null) return XposedHelpers.getLongField(u, "id");
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0;
     }
 
     /** 退避重试，不做无脑重发 */
@@ -558,8 +606,8 @@ public class Scheduler {
         return new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
     }
 
-    private static String markKey(String day, Config.Job job, int acct) {
-        return day + "#" + job.time + "@" + job.chat + "#" + acct;
+    private static String markKey(String day, Config.Job job, long uid) {
+        return day + "#" + job.time + "@" + job.chat + "#" + uid;
     }
 
     private static long peerDialogId(Object message) {
