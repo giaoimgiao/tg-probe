@@ -219,6 +219,68 @@ public class AutoTask {
         return true;
     }
 
+    /** 直接按 dialogId 发送(调用方已确定 peer, 无需 resolve) —— 必须在主线程调用 */
+    public static boolean sendByDialog(ClassLoader cl, int acct, long dialogId, String text) {
+        try {
+            Class<?> mcCls = XposedHelpers.findClass("org.telegram.messenger.MessagesController", cl);
+            Object mc = XposedHelpers.callStaticMethod(mcCls, "getInstance",
+                    new Class[]{int.class}, acct);
+
+            try {
+                Object uc = XposedHelpers.callStaticMethod(
+                        XposedHelpers.findClass("org.telegram.messenger.UserConfig", cl),
+                        "getInstance", new Class[]{int.class}, acct);
+                Object cu = uc == null ? null : XposedHelpers.callMethod(uc, "getCurrentUser");
+                Main.log("[send] 账号 acct=" + acct + " uid="
+                        + (cu == null ? "?" : String.valueOf(XposedHelpers.getLongField(cu, "id")))
+                        + " dialogId=" + dialogId);
+            } catch (Throwable ignored) {
+            }
+
+            Object inputPeer = XposedHelpers.callMethod(mc, "getInputPeer",
+                    new Class[]{long.class}, dialogId);
+            if (inputPeer == null
+                    || inputPeer.getClass().getSimpleName().toLowerCase(Locale.US).contains("empty")) {
+                Main.log("[send] inputPeer 为空 dialogId=" + dialogId + " —— 该账号可能未加入此群");
+                return false;
+            }
+
+            Class<?> acInstCls = XposedHelpers.findClass("org.telegram.messenger.AccountInstance", cl);
+            Object acInst = XposedHelpers.callStaticMethod(acInstCls, "getInstance",
+                    new Class[]{int.class}, acct);
+            Object smh = XposedHelpers.callMethod(acInst, "getSendMessagesHelper");
+
+            Class<?> smpCls = XposedHelpers.findClass(
+                    "org.telegram.messenger.SendMessagesHelper$SendMessageParams", cl);
+            Object smp = XposedHelpers.newInstance(smpCls);
+            XposedHelpers.setLongField(smp, "peer", dialogId);
+            XposedHelpers.setObjectField(smp, "message", text);
+            XposedHelpers.setBooleanField(smp, "notify", true);
+            XposedHelpers.setIntField(smp, "scheduleDate", 0);
+            XposedHelpers.setObjectField(smp, "params", new HashMap<String, String>());
+
+            Method target = null;
+            Method[] ms = smh.getClass().getMethods();
+            for (int i = 0; i < ms.length; i++) {
+                Class<?>[] ps = ms[i].getParameterTypes();
+                if (ps.length == 1 && ps[0].equals(smpCls)) {
+                    target = ms[i];
+                    break;
+                }
+            }
+            if (target == null) {
+                Main.log("[send] 未找到 sendMessage(SendMessageParams)");
+                return false;
+            }
+            target.invoke(smh, smp);
+            Main.log("[send] ✔ 已发送 acct=" + acct + " dialogId=" + dialogId + " text=" + text);
+            return true;
+        } catch (Throwable t) {
+            Main.log("[send] 失败: " + t);
+            return false;
+        }
+    }
+
     // ==================== peer 解析 ====================
 
     private static long resolveDialogId(Object mc, String target) {
