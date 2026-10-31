@@ -296,33 +296,46 @@ public class Main implements IXposedHookLoadPackage {
         });
     }
 
-    /** 列出本机已激活的 TG 账号及其索引（TG 最多 4 个账号，索引 0..3） */
+    /** 列出账号槽真实状态（区分“槽位空”和“有实例但未登录”） */
     private static String buildAccountList(ClassLoader cl) {
         StringBuilder sb = new StringBuilder("账号:\n");
         try {
             Class<?> ucCls = XposedHelpers.findClass("org.telegram.messenger.UserConfig", cl);
-            int sel = XposedHelpers.getStaticIntField(ucCls, "selectedAccount");
+            Object selObj = XposedHelpers.getStaticIntField(ucCls, "selectedAccount");
+            int sel = selObj instanceof Integer ? (Integer) selObj : 0;
+            Object cntObj = null;
+            try {
+                cntObj = XposedHelpers.callStaticMethod(ucCls, "getActivatedAccountsCount");
+            } catch (Throwable ignored) {
+            }
+            sb.append("  已激活=").append(cntObj).append(" 当前=").append(sel).append('\n');
+
+            Object arr = XposedHelpers.getStaticObjectField(ucCls, "Instance");
+            Object[] slots = (arr instanceof Object[]) ? (Object[]) arr : new Object[0];
             for (int i = 0; i < 4; i++) {
+                Object inst = i < slots.length ? slots[i] : null;
+                if (inst == null) {
+                    sb.append("  acct=").append(i).append("  槽位空\n");
+                    continue;
+                }
+                Object act = XposedHelpers.callMethod(inst, "isClientActivated");
+                boolean on = act instanceof Boolean && (Boolean) act;
+                Object u = null;
                 try {
-                    Object uc = XposedHelpers.callStaticMethod(ucCls, "getInstance",
-                            new Class[]{int.class}, i);
-                    if (uc == null) continue;
-                    Object act = XposedHelpers.callMethod(uc, "isClientActivated");
-                    boolean on = act instanceof Boolean && (Boolean) act;
-                    Object u = uc == null ? null : XposedHelpers.callMethod(uc, "getCurrentUser");
-                    if (!on || u == null) {
-                        sb.append("  acct=").append(i).append("  （空/未登录）\n");
-                        continue;
-                    }
-                    long uid = XposedHelpers.getLongField(u, "id");
-                    Object un = XposedHelpers.getObjectField(u, "username");
-                    sb.append("  acct=").append(i)
-                            .append("  id=").append(uid)
-                            .append(un == null ? "" : "  @" + un)
-                            .append(i == sel ? "  ←当前" : "")
-                            .append('\n');
+                    u = XposedHelpers.callMethod(inst, "getCurrentUser");
                 } catch (Throwable ignored) {
                 }
+                if (!on || u == null) {
+                    sb.append("  acct=").append(i).append("  有实例但未登录\n");
+                    continue;
+                }
+                long uid = XposedHelpers.getLongField(u, "id");
+                Object un = XposedHelpers.getObjectField(u, "username");
+                sb.append("  acct=").append(i)
+                        .append("  id=").append(uid)
+                        .append(un == null ? "" : "  @" + un)
+                        .append(i == sel ? "  ←当前" : "")
+                        .append('\n');
             }
         } catch (Throwable t) {
             sb.append("  (读取失败: ").append(t).append(")\n");
