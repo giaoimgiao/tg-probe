@@ -106,13 +106,33 @@ public class Main implements IXposedHookLoadPackage {
                             Object actObj = XposedHelpers.callMethod(fragment, "getParentActivity");
                             if (!(actObj instanceof Activity)) return;
 
-                            Object full = XposedHelpers.callMethod(fragment, "getUserInfo");
-                            if (full == null) return;
-                            Object user = XposedHelpers.getObjectField(full, "user");
-                            if (user == null) return;
-
-                            final long id = XposedHelpers.getLongField(user, "id");
+                            // 13.1.0 起 getUserInfo() 被 R8 混淆，改用 arguments/intent 里的 user_id
+                            final long id = resolveProfileUserId(fragment, actObj);
                             if (id == 0) return;
+
+                            int acct;
+                            try {
+                                acct = XposedHelpers.getStaticIntField(
+                                        XposedHelpers.findClass(
+                                                "org.telegram.messenger.UserConfig",
+                                                lpparam.classLoader),
+                                        "selectedAccount");
+                            } catch (Throwable t) {
+                                acct = 0;
+                            }
+
+                            Object user = null;
+                            try {
+                                Object mc = XposedHelpers.callStaticMethod(
+                                        XposedHelpers.findClass(
+                                                "org.telegram.messenger.MessagesController",
+                                                lpparam.classLoader),
+                                        "getInstance", new Class[]{int.class}, acct);
+                                user = XposedHelpers.callMethod(mc, "getUser",
+                                        new Class[]{Long.class}, Long.valueOf(id));
+                            } catch (Throwable ignored) {
+                            }
+                            if (user == null) return;
 
                             long now = System.currentTimeMillis();
                             if (id == lastShownId && now - lastShownTs < 20000) return;
@@ -139,6 +159,27 @@ public class Main implements IXposedHookLoadPackage {
                     }
                 });
         log("hook ProfileActivity 完成");
+    }
+
+    /**
+     * 13.1.0 起 ProfileActivity.getUserInfo() 已被 R8 混淆，
+     * 改为从 Fragment 参数 / Activity Intent 里取 user_id（这两个 key 是字符串常量，不会被混淆）
+     */
+    private static long resolveProfileUserId(Object fragment, Object act) {
+        try {
+            Object b = XposedHelpers.callMethod(fragment, "getArguments");
+            if (b instanceof android.os.Bundle) {
+                android.os.Bundle bundle = (android.os.Bundle) b;
+                if (bundle.containsKey("user_id")) return bundle.getLong("user_id", 0);
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            android.content.Intent it = ((Activity) act).getIntent();
+            if (it != null) return it.getLongExtra("user_id", 0);
+        } catch (Throwable ignored) {
+        }
+        return 0;
     }
 
     // ==================== 送达回执 / 网络恢复 ====================
