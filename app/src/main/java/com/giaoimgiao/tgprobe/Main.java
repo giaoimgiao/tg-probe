@@ -74,6 +74,11 @@ public class Main implements IXposedHookLoadPackage {
             } catch (Throwable t) {
                 log("hook ProfileActivity 异常: " + t);
             }
+            try {
+                AutoTask.start(lpparam.classLoader);
+            } catch (Throwable t) {
+                log("调度启动异常: " + t);
+            }
         }
     }
 
@@ -276,7 +281,7 @@ public class Main implements IXposedHookLoadPackage {
                 + " log_bulk=" + cfgLogBulk + " watch=" + watchUser);
     }
 
-    private static void log(String msg) {
+    static void log(String msg) {
         String ts = new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
         String line = "[" + ts + "] " + msg + "\n";
         synchronized (LOG_LOCK) {
