@@ -63,7 +63,7 @@ public class Config {
         StringBuilder sb = new StringBuilder();
         for (Job j : jobs) {
             if (sb.length() > 0) sb.append('\n');
-            sb.append(j.time).append('|').append(j.chat).append('|')
+            sb.append(j.time.isEmpty() ? "-" : j.time).append('|').append(j.chat).append('|')
                     .append(j.accountsLabel()).append('|').append(j.text);
         }
         return sb.toString();
@@ -73,17 +73,19 @@ public class Config {
         if (raw == null) return null;
         String s = raw.trim();
         if (s.startsWith("job=")) s = s.substring(4).trim();
-        if (s.isEmpty()) return null;
+        if (s.isEmpty() || s.startsWith("#")) return null;
         String[] p = s.split("\\|", 4);
         if (p.length < 4) return null;
 
         Job j = new Job();
         j.time = p[0].trim();
+        // "-" 或空 = 不限制时间，当天一有机会就发
+        if ("-".equals(j.time)) j.time = "";
         j.chat = p[1].trim();
         if (j.chat.startsWith("@")) j.chat = j.chat.substring(1);
         j.accounts = p[2].trim();
         j.text = p[3];
-        if (j.time.isEmpty() || j.chat.isEmpty()) return null;
+        if (j.chat.isEmpty()) return null;
         return j;
     }
 
