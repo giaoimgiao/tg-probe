@@ -189,6 +189,17 @@ public class Main implements IXposedHookLoadPackage {
                 "org.telegram.messenger.NotificationCenter", lpparam.classLoader);
         final int idDelivered = XposedHelpers.getStaticIntField(ncCls, "messageReceivedByServer");
         final int idConn = XposedHelpers.getStaticIntField(ncCls, "didUpdateConnectionState");
+        int e = -1, d2 = -1;
+        try {
+            e = XposedHelpers.getStaticIntField(ncCls, "messageSendError");
+        } catch (Throwable ignored) {
+        }
+        try {
+            d2 = XposedHelpers.getStaticIntField(ncCls, "messageReceivedByServer2");
+        } catch (Throwable ignored) {
+        }
+        final int idError = e;
+        final int idDelivered2 = d2;
 
         XposedHelpers.findAndHookMethod(ncCls, "postNotificationName",
                 int.class, Object[].class, new XC_MethodHook() {
@@ -198,9 +209,14 @@ public class Main implements IXposedHookLoadPackage {
                             Object idObj = param.args[0];
                             if (!(idObj instanceof Integer)) return;
                             int id = (Integer) idObj;
-                            if (id == idDelivered) {
+                            Object[] args = (Object[]) param.args[1];
+
+                            if (id == idDelivered || (idDelivered2 >= 0 && id == idDelivered2)) {
                                 int acct = XposedHelpers.getIntField(param.thisObject, "currentAccount");
-                                Scheduler.onMessageReceivedByServer(acct, (Object[]) param.args[1]);
+                                Scheduler.onMessageReceivedByServer(acct, args);
+                            } else if (idError >= 0 && id == idError) {
+                                int acct = XposedHelpers.getIntField(param.thisObject, "currentAccount");
+                                Scheduler.onMessageSendError(acct, args);
                             } else if (id == idConn) {
                                 Scheduler.onConnectionChanged();
                             }
@@ -280,21 +296,24 @@ public class Main implements IXposedHookLoadPackage {
         });
     }
 
-    /** 列出本机已激活的 TG 账号及其索引 */
+    /** 列出本机已激活的 TG 账号及其索引（TG 最多 4 个账号，索引 0..3） */
     private static String buildAccountList(ClassLoader cl) {
         StringBuilder sb = new StringBuilder("账号:\n");
         try {
             Class<?> ucCls = XposedHelpers.findClass("org.telegram.messenger.UserConfig", cl);
             int sel = XposedHelpers.getStaticIntField(ucCls, "selectedAccount");
-            for (int i = 0; i < 3; i++) {
+            for (int i = 0; i < 4; i++) {
                 try {
                     Object uc = XposedHelpers.callStaticMethod(ucCls, "getInstance",
                             new Class[]{int.class}, i);
                     if (uc == null) continue;
                     Object act = XposedHelpers.callMethod(uc, "isClientActivated");
-                    if (!(act instanceof Boolean) || !((Boolean) act)) continue;
-                    Object u = XposedHelpers.callMethod(uc, "getCurrentUser");
-                    if (u == null) continue;
+                    boolean on = act instanceof Boolean && (Boolean) act;
+                    Object u = uc == null ? null : XposedHelpers.callMethod(uc, "getCurrentUser");
+                    if (!on || u == null) {
+                        sb.append("  acct=").append(i).append("  （空/未登录）\n");
+                        continue;
+                    }
                     long uid = XposedHelpers.getLongField(u, "id");
                     Object un = XposedHelpers.getObjectField(u, "username");
                     sb.append("  acct=").append(i)
