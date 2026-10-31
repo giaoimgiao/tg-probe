@@ -128,9 +128,10 @@ public class MainActivity extends Activity {
         // ---------- 编辑区 ----------
         root.addView(title("新建 / 修改任务"));
 
-        root.addView(hint("第 1 步：几点发（24 小时制）"));
+        root.addView(hint("第 1 步：每天最早几点以后才允许发（可以不填）"));
+        root.addView(hint("不填 = 只要你今天还没签，一打开 Telegram 就发，不限时间（推荐）"));
         etTime = new EditText(this);
-        etTime.setHint("例如 09:00");
+        etTime.setHint("留空 = 不限时间，例如 09:00");
         etTime.setSingleLine(true);
         root.addView(etTime);
 
@@ -229,7 +230,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < jobs.size(); i++) {
             Config.Job j = jobs.get(i);
-            sb.append(i + 1).append(".  ").append(j.time)
+            sb.append(i + 1).append(".  ").append(j.time.isEmpty() ? "不限时间" : j.time)
                     .append("  →  @").append(j.chat).append('\n');
             sb.append("     账号 ").append(j.accountsLabel())
                     .append(" · ").append(j.text);
@@ -243,7 +244,7 @@ public class MainActivity extends Activity {
         final String[] items = new String[jobs.size()];
         for (int i = 0; i < jobs.size(); i++) {
             Config.Job j = jobs.get(i);
-            items[i] = j.time + "  @" + j.chat;
+            items[i] = (j.time.isEmpty() ? "不限时间" : j.time) + "  @" + j.chat;
         }
         new AlertDialog.Builder(this)
                 .setTitle("要修改哪一个？")
@@ -262,7 +263,7 @@ public class MainActivity extends Activity {
         final String[] items = new String[jobs.size()];
         for (int i = 0; i < jobs.size(); i++) {
             Config.Job j = jobs.get(i);
-            items[i] = j.time + "  @" + j.chat;
+            items[i] = (j.time.isEmpty() ? "不限时间" : j.time) + "  @" + j.chat;
         }
         new AlertDialog.Builder(this)
                 .setTitle("要删除哪一个？")
@@ -308,22 +309,25 @@ public class MainActivity extends Activity {
         String chat = etChat.getText().toString().trim();
         String text = etText.getText().toString();
 
-        if (time.isEmpty() || chat.isEmpty()) {
-            Toast.makeText(this, "请先填写时间和群用户名", Toast.LENGTH_SHORT).show();
+        if (chat.isEmpty()) {
+            Toast.makeText(this, "请填写群用户名", Toast.LENGTH_SHORT).show();
             return;
         }
-        if (!time.matches("\\d{1,2}:\\d{2}")) {
-            Toast.makeText(this, "时间请按 24 小时制填写，例如 09:00", Toast.LENGTH_SHORT).show();
-            return;
+        if (!time.isEmpty()) {
+            if (!time.matches("\\d{1,2}:\\d{2}")) {
+                Toast.makeText(this, "时间请按 24 小时制填写，例如 09:00；不填就表示不限时间",
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+            String[] hm = time.split(":");
+            int h = Integer.parseInt(hm[0]);
+            int m = Integer.parseInt(hm[1]);
+            if (h > 23 || m > 59) {
+                Toast.makeText(this, "时间超出范围", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            time = (h < 10 ? "0" + h : "" + h) + ":" + (m < 10 ? "0" + m : "" + m);
         }
-        String[] hm = time.split(":");
-        int h = Integer.parseInt(hm[0]);
-        int m = Integer.parseInt(hm[1]);
-        if (h > 23 || m > 59) {
-            Toast.makeText(this, "时间超出范围", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        time = (h < 10 ? "0" + h : "" + h) + ":" + (m < 10 ? "0" + m : "" + m);
 
         if (chat.startsWith("@")) chat = chat.substring(1);
         if (text.trim().isEmpty()) text = "🎁 每日签到";
