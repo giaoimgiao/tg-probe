@@ -68,6 +68,7 @@ public class Scheduler {
 
     private static ClassLoader cl;
     private static long lastReload = 0;
+    private static String lastJobSig = "";
     private static long lastConnTry = 0;
 
     private static class Waiting {
@@ -161,7 +162,11 @@ public class Scheduler {
             Main.log("[sched] 没有任务");
             return;
         }
-        Main.log("[sched] 载入 " + c.jobs.size() + " 个任务");
+        String sig = c.jobs.size() + "|" + Config.join(c.jobs);
+        if (!sig.equals(lastJobSig)) {
+            lastJobSig = sig;
+            Main.log("[sched] 配置已加载，任务数=" + c.jobs.size());
+        }
         for (int i = 0; i < c.jobs.size(); i++) {
             schedule(c.jobs.get(i));
         }
