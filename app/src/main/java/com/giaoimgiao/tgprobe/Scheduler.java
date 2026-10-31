@@ -49,6 +49,10 @@ public class Scheduler {
     private static final long[] BACKOFF = {
             60_000L, 120_000L, 300_000L, 600_000L, 1_800_000L, 3_600_000L
     };
+    /** 会话缓存还没加载好这类"一会儿就好"的情况用短退避 */
+    private static final long[] SOFT_BACKOFF = {
+            10_000L, 20_000L, 40_000L, 90_000L, 180_000L
+    };
     private static final long CONFIRM_TIMEOUT = 120_000L;
 
     private static final Handler H = new Handler(Looper.getMainLooper());
@@ -245,6 +249,7 @@ public class Scheduler {
         }
 
         boolean needRetry = false;
+        boolean needSoftRetry = false;
         boolean sentAny = false;
 
         for (int i = 0; i < todo.size(); i++) {
@@ -262,9 +267,9 @@ public class Scheduler {
 
             long dialogId = resolveDialogId(acct, job.chat);
             if (dialogId == 0) {
-                Main.log("[sched] acct=" + acct + " 找不到 @" + job.chat
-                        + " 的会话缓存 —— 请用该账号打开这个群一次（TG 需要 access_hash），之后不用再进");
-                needRetry = true;
+                Main.log("[sched] acct=" + acct + " 会话缓存里还没有 @" + job.chat
+                        + "，稍等再试（若是全新账号，请先打开这个群一次）");
+                needSoftRetry = true;
                 continue;
             }
 
@@ -274,6 +279,9 @@ public class Scheduler {
 
             boolean ok = AutoTask.sendByDialog(cl, acct, dialogId, job.text);
             if (ok) {
+                // 关键：提交成功就立刻落盘，避免切号/重进 TG 时重复发送
+                markDone(key);
+
                 Waiting w = new Waiting();
                 w.acct = acct;
                 w.dialogId = dialogId;
@@ -296,6 +304,8 @@ public class Scheduler {
         }
         if (needRetry) {
             backoff(job, "部分账号未就绪");
+        } else if (needSoftRetry) {
+            backoff(job, "会话缓存未就绪", true);
         } else if (!sentAny) {
             // 全部被跳过（账号未登录等），排到明天
             schedule(job);
@@ -305,10 +315,16 @@ public class Scheduler {
 
     /** 退避重试，不做无脑重发 */
     private static void backoff(final Config.Job job, String reason) {
+        backoff(job, reason, false);
+    }
+
+    /** soft=true 用于"会话缓存还没加载好"这类很快能好的情况 */
+    private static void backoff(final Config.Job job, String reason, boolean soft) {
         Integer n = RETRY.get(job.id());
         int idx = n == null ? 0 : n;
         RETRY.put(job.id(), idx + 1);
-        long delay = BACKOFF[Math.min(idx, BACKOFF.length - 1)];
+        long[] table = soft ? SOFT_BACKOFF : BACKOFF;
+        long delay = table[Math.min(idx, table.length - 1)];
         Main.log("[sched] " + reason + " → " + (delay / 1000) + " 秒后重试 (" + job.time + " @" + job.chat + ")");
 
         Runnable r = new Runnable() {
@@ -335,38 +351,53 @@ public class Scheduler {
 
     private static void handleDelivered(int account, Object[] args) {
         if (args == null || args.length == 0) return;
-        for (int i = 0; i < args.length; i++) {
-            Object a = args[i];
-            if (a == null) continue;
-            if (!"org.telegram.tgnet.TLRPC$Message".equals(a.getClass().getName())) continue;
 
-            long dlg = peerDialogId(a);
-            if (dlg == 0) continue;
-            String txt = strField(a, "message");
+        // TG 13.1.0 实测结构:
+        //   args[0]=Integer randomId, args[1]=Integer msgId,
+        //   args[2]=TLRPC$Message, args[3]=Long dialogId,
+        //   args[4]=Long, args[5]=Integer, args[6]=Boolean
+        long dlg = 0;
+        String txt = null;
+        if (args.length > 3 && args[3] instanceof Long) dlg = (Long) args[3];
+        if (args.length > 2 && isTlMessage(args[2])) txt = strField(args[2], "message");
 
-            Waiting hit = null;
-            synchronized (WAITING) {
-                for (int k = WAITING.size() - 1; k >= 0; k--) {
-                    Waiting w = WAITING.get(k);
-                    if (w.acct != account) continue;
-                    if (w.dialogId != dlg) continue;
-                    if (!eq(w.text, txt)) continue;
-                    WAITING.remove(k);
-                    hit = w;
-                    break;
-                }
+        // 兜底：结构变动时按类型找
+        if (dlg == 0 || txt == null) {
+            for (int i = 0; i < args.length; i++) {
+                Object a = args[i];
+                if (a == null || !isTlMessage(a)) continue;
+                if (dlg == 0) dlg = peerDialogId(a);
+                if (txt == null) txt = strField(a, "message");
             }
-            if (hit != null) {
-                markDone(hit.markKey);
-                RETRY.remove(hit.job.id());
-                Main.log("[sched] ✔ 服务端确认送达 acct=" + account
-                        + " chat=@" + hit.job.chat + " dialogId=" + dlg);
-                schedule(hit.job);
+        }
+        if (dlg == 0) return;
+
+        synchronized (WAITING) {
+            for (int k = WAITING.size() - 1; k >= 0; k--) {
+                Waiting w = WAITING.get(k);
+                if (w.acct != account) continue;
+                if (w.dialogId != dlg) continue;
+                if (txt != null && w.text != null && !w.text.equals(txt)) continue;
+                WAITING.remove(k);
+                Main.log("[sched] ✔ 服务端已收到 acct=" + account
+                        + " chat=@" + w.job.chat + " dialogId=" + dlg);
+                break;
             }
         }
     }
 
-    /** 超时未收到回执 → 不标记完成，退避重试 */
+    /** 实例真实类型是 TLRPC$TL_message，必须按继承链判断，不能比类名字符串 */
+    private static boolean isTlMessage(Object o) {
+        if (o == null) return false;
+        Class<?> c = o.getClass();
+        for (int i = 0; c != null && i < 6; i++) {
+            if ("org.telegram.tgnet.TLRPC$Message".equals(c.getName())) return true;
+            c = c.getSuperclass();
+        }
+        return false;
+    }
+
+    /** 提交后长时间没收到回执：只告警，不清标记（TG 自己的发送队列会继续重试，避免我们重复发） */
     private static final Runnable CONFIRM_CHECK = new Runnable() {
         @Override
         public void run() {
@@ -383,12 +414,37 @@ public class Scheduler {
             }
             for (int i = 0; i < expire.size(); i++) {
                 Waiting w = expire.get(i);
-                Main.log("[sched] ✗ 未收到送达回执 acct=" + w.acct
-                        + " chat=@" + w.job.chat + " → 稍后重试（未标记完成）");
-                backoff(w.job, "未确认送达");
+                Main.log("[sched] ! 暂未收到回执 acct=" + w.acct
+                        + " chat=@" + w.job.chat + "（已提交，TG 会自动重试，不重复发送）");
             }
         }
     };
+
+    /** 收到 messageSendError：确认这次真的发失败了，清除今日标记让下轮重试 */
+    public static void onMessageSendError(final int account, final Object[] args) {
+        H.post(new Runnable() {
+            @Override
+            public void run() {
+                long now = System.currentTimeMillis();
+                Waiting hit = null;
+                synchronized (WAITING) {
+                    for (int k = WAITING.size() - 1; k >= 0; k--) {
+                        Waiting w = WAITING.get(k);
+                        if (w.acct != account) continue;
+                        if (now - w.at > 5 * 60_000L) continue;
+                        WAITING.remove(k);
+                        hit = w;
+                        break;
+                    }
+                }
+                if (hit == null) return;
+                removeDone(hit.markKey);
+                Main.log("[sched] ✗ 发送失败回执 acct=" + account + " chat=@" + hit.job.chat
+                        + " → 已撤销今日标记，稍后重试");
+                backoff(hit.job, "发送失败");
+            }
+        });
+    }
 
     /** 网络恢复 → 立刻重新调度一次（有未完成任务才会真的执行） */
     public static void onConnectionChanged() {
@@ -565,6 +621,7 @@ public class Scheduler {
     }
 
     private static void markDone(String key) {
+        if (isDone(key)) return; // 幂等，避免重复写
         try {
             File f = new File(STATE);
             if (f.exists() && f.length() > 8192) {
@@ -590,6 +647,31 @@ public class Scheduler {
             FileOutputStream fos = new FileOutputStream(f, true);
             fos.write((key + "\n").getBytes("UTF-8"));
             fos.close();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 撤销某个标记（发送真失败时用） */
+    private static void removeDone(String key) {
+        try {
+            File f = new File(STATE);
+            if (!f.exists()) return;
+            List<String> keep = new ArrayList<>();
+            BufferedReader br = new BufferedReader(
+                    new InputStreamReader(new FileInputStream(f), "UTF-8"));
+            String line;
+            while ((line = br.readLine()) != null) {
+                String s = line.trim();
+                if (s.isEmpty()) continue;
+                if (!s.equals(key)) keep.add(s);
+            }
+            br.close();
+            f.delete();
+            FileOutputStream w = new FileOutputStream(f, false);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < keep.size(); i++) sb.append(keep.get(i)).append('\n');
+            w.write(sb.toString().getBytes("UTF-8"));
+            w.close();
         } catch (Throwable ignored) {
         }
     }
