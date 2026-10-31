@@ -75,9 +75,9 @@ public class Main implements IXposedHookLoadPackage {
                 log("hook ProfileActivity 异常: " + t);
             }
             try {
-                AutoTask.start(lpparam.classLoader);
+                hookChatActivity(lpparam);
             } catch (Throwable t) {
-                log("调度启动异常: " + t);
+                log("hook ChatActivity 异常: " + t);
             }
         }
     }
@@ -128,6 +128,23 @@ public class Main implements IXposedHookLoadPackage {
                     }
                 });
         log("hook ProfileActivity 完成");
+    }
+
+    // ==================== 进入群聊 → 签到弹窗 ====================
+
+    private void hookChatActivity(final XC_LoadPackage.LoadPackageParam lpparam) {
+        XposedHelpers.findAndHookMethod("org.telegram.ui.ChatActivity",
+                lpparam.classLoader, "onResume", new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (!cfgEnabled) return;
+                        try {
+                            SignTask.onChatResume(param.thisObject, lpparam.classLoader);
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                });
+        log("hook ChatActivity 完成");
     }
 
     private void showPanel(final Activity act, final String acctInfo, final long id,
