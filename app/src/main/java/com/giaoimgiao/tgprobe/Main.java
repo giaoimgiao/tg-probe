@@ -9,6 +9,7 @@ import android.widget.TextView;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XSharedPreferences;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
@@ -75,9 +76,19 @@ public class Main implements IXposedHookLoadPackage {
                 log("hook ProfileActivity 异常: " + t);
             }
             try {
-                hookChatActivity(lpparam);
+                Scheduler.init(lpparam.classLoader);
             } catch (Throwable t) {
-                log("hook ChatActivity 异常: " + t);
+                log("调度器启动异常: " + t);
+            }
+            try {
+                hookNotificationCenter(lpparam);
+            } catch (Throwable t) {
+                log("hook NotificationCenter 异常: " + t);
+            }
+            try {
+                hookLaunchActivity(lpparam);
+            } catch (Throwable t) {
+                log("hook LaunchActivity 异常: " + t);
             }
         }
     }
@@ -130,21 +141,50 @@ public class Main implements IXposedHookLoadPackage {
         log("hook ProfileActivity 完成");
     }
 
-    // ==================== 进入群聊 → 签到弹窗 ====================
+    // ==================== 送达回执 / 网络恢复 ====================
 
-    private void hookChatActivity(final XC_LoadPackage.LoadPackageParam lpparam) {
-        XposedHelpers.findAndHookMethod("org.telegram.ui.ChatActivity",
+    private void hookNotificationCenter(final XC_LoadPackage.LoadPackageParam lpparam) {
+        final Class<?> ncCls = XposedHelpers.findClass(
+                "org.telegram.messenger.NotificationCenter", lpparam.classLoader);
+        final int idDelivered = XposedHelpers.getStaticIntField(ncCls, "messageReceivedByServer");
+        final int idConn = XposedHelpers.getStaticIntField(ncCls, "didUpdateConnectionState");
+
+        XposedHelpers.findAndHookMethod(ncCls, "postNotificationName",
+                int.class, Object[].class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            Object idObj = param.args[0];
+                            if (!(idObj instanceof Integer)) return;
+                            int id = (Integer) idObj;
+                            if (id == idDelivered) {
+                                int acct = XposedHelpers.getIntField(param.thisObject, "currentAccount");
+                                Scheduler.onMessageReceivedByServer(acct, (Object[]) param.args[1]);
+                            } else if (id == idConn) {
+                                Scheduler.onConnectionChanged();
+                            }
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                });
+        log("hook NotificationCenter 完成");
+    }
+
+    // ==================== 用户打开 TG → 重新调度 ====================
+
+    private void hookLaunchActivity(final XC_LoadPackage.LoadPackageParam lpparam) {
+        XposedHelpers.findAndHookMethod("org.telegram.ui.LaunchActivity",
                 lpparam.classLoader, "onResume", new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         if (!cfgEnabled) return;
                         try {
-                            SignTask.onChatResume(param.thisObject, lpparam.classLoader);
+                            Scheduler.reload(false);
                         } catch (Throwable ignored) {
                         }
                     }
                 });
-        log("hook ChatActivity 完成");
+        log("hook LaunchActivity 完成");
     }
 
     private void showPanel(final Activity act, final String acctInfo, final long id,
@@ -301,6 +341,22 @@ public class Main implements IXposedHookLoadPackage {
     }
 
     private void loadConfig() {
+        // 优先读模块设置界面写入的配置
+        try {
+            XSharedPreferences p = new XSharedPreferences(Config.PKG, Config.PREFS);
+            p.reload();
+            if (p.getBoolean("configured", false)) {
+                cfgEnabled = p.getBoolean("enabled", true);
+                cfgPopup = p.getBoolean("popup", true);
+                watchUser = p.getString("watch", "");
+                log("配置(prefs): enabled=" + cfgEnabled + " popup=" + cfgPopup
+                        + " watch=" + watchUser);
+                return;
+            }
+        } catch (Throwable t) {
+            log("读模块配置失败: " + t);
+        }
+
         String[] paths = {CONF_PRIVATE, CONF_SDCARD};
         for (String p : paths) {
             try {
