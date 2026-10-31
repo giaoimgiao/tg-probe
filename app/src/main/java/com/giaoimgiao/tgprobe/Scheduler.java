@@ -178,9 +178,6 @@ public class Scheduler {
         };
         DISPATCHED.add(r);
         H.postDelayed(r, Math.max(0, delay));
-        String when = delay <= 0 ? "立即执行（今天还没签）" : (delay / 1000) + " 秒后";
-        Main.log("[sched] " + (job.time.isEmpty() ? "不限时间" : job.time + " 之后")
-                + " @" + job.chat + " → " + when);
     }
 
     /** 距下一次可执行还有多少毫秒（"当天额度"语义，不是精确时刻） */
@@ -653,7 +650,23 @@ public class Scheduler {
 
     // ==================== 状态文件 ====================
 
+    /** 今日完成表（内存缓存，避免每次调度都读文件） */
+    private static final Map<String, Boolean> DONE = new HashMap<>();
+
     private static boolean isDone(String key) {
+        synchronized (DONE) {
+            Boolean v = DONE.get(key);
+            if (v != null) return v;
+        }
+        boolean r = readDoneFromFile(key);
+        synchronized (DONE) {
+            if (DONE.size() > 400) DONE.clear();
+            DONE.put(key, r);
+        }
+        return r;
+    }
+
+    private static boolean readDoneFromFile(String key) {
         try {
             File f = new File(STATE);
             if (!f.exists()) return false;
@@ -673,7 +686,11 @@ public class Scheduler {
     }
 
     private static void markDone(String key) {
-        if (isDone(key)) return; // 幂等，避免重复写
+        synchronized (DONE) {
+            Boolean v = DONE.get(key);
+            if (v != null && v) return;
+            DONE.put(key, true);
+        }
         try {
             File f = new File(STATE);
             if (f.exists() && f.length() > 8192) {
@@ -705,6 +722,9 @@ public class Scheduler {
 
     /** 撤销某个标记（发送真失败时用） */
     private static void removeDone(String key) {
+        synchronized (DONE) {
+            DONE.put(key, false);
+        }
         try {
             File f = new File(STATE);
             if (!f.exists()) return;
