@@ -120,7 +120,9 @@ public class Main implements IXposedHookLoadPackage {
                                     + " phone=" + (visible ? phone : "NULL")
                                     + " contact=" + contact + " mutual=" + mutual);
 
-                            showPanel((Activity) actObj, id, username, phone, contact, mutual, bot);
+                            String acctInfo = buildAccountList(lpparam.classLoader);
+                            log("账号: " + acctInfo.replace('\n', ' '));
+                            showPanel((Activity) actObj, acctInfo, id, username, phone, contact, mutual, bot);
                         } catch (Throwable ignored) {
                         }
                     }
@@ -128,12 +130,14 @@ public class Main implements IXposedHookLoadPackage {
         log("hook ProfileActivity 完成");
     }
 
-    private void showPanel(final Activity act, final long id, final String username,
-                           final String phone, final boolean contact,
-                           final boolean mutual, final boolean bot) {
+    private void showPanel(final Activity act, final String acctInfo, final long id,
+                           final String username, final String phone,
+                           final boolean contact, final boolean mutual, final boolean bot) {
         final boolean visible = phone != null && !phone.isEmpty();
 
         final StringBuilder sb = new StringBuilder();
+        sb.append(acctInfo);
+        sb.append("──────────────\n");
         sb.append("用户: ").append(username == null ? "(无用户名)" : "@" + username).append('\n');
         sb.append("ID: ").append(id).append('\n');
         sb.append("──────────────\n");
@@ -176,6 +180,37 @@ public class Main implements IXposedHookLoadPackage {
                 }
             }
         });
+    }
+
+    /** 列出本机已激活的 TG 账号及其索引 */
+    private static String buildAccountList(ClassLoader cl) {
+        StringBuilder sb = new StringBuilder("账号:\n");
+        try {
+            Class<?> ucCls = XposedHelpers.findClass("org.telegram.messenger.UserConfig", cl);
+            int sel = XposedHelpers.getStaticIntField(ucCls, "selectedAccount");
+            for (int i = 0; i < 3; i++) {
+                try {
+                    Object uc = XposedHelpers.callStaticMethod(ucCls, "getInstance",
+                            new Class[]{int.class}, i);
+                    if (uc == null) continue;
+                    Object act = XposedHelpers.callMethod(uc, "isClientActivated");
+                    if (!(act instanceof Boolean) || !((Boolean) act)) continue;
+                    Object u = XposedHelpers.callMethod(uc, "getCurrentUser");
+                    if (u == null) continue;
+                    long uid = XposedHelpers.getLongField(u, "id");
+                    Object un = XposedHelpers.getObjectField(u, "username");
+                    sb.append("  acct=").append(i)
+                            .append("  id=").append(uid)
+                            .append(un == null ? "" : "  @" + un)
+                            .append(i == sel ? "  ←当前" : "")
+                            .append('\n');
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable t) {
+            sb.append("  (读取失败: ").append(t).append(")\n");
+        }
+        return sb.toString();
     }
 
     // ==================== 批量观测(可选) ====================
