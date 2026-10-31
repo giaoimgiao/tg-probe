@@ -18,10 +18,13 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
+import java.io.RandomAccessFile;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Date;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * TG Probe v2.0
@@ -462,25 +465,63 @@ public class Main implements IXposedHookLoadPackage {
                 + " log_bulk=" + cfgLogBulk + " watch=" + watchUser);
     }
 
+    private static final Map<String, Long> LOG_DEDUP = new HashMap<>();
+    private static final long LOG_DEDUP_MS = 60_000L;
+    private static final long LOG_MAX_BYTES = 48 * 1024;
+    private static final long LOG_KEEP_BYTES = 24 * 1024;
+
+    /** 写日志：60 秒内相同内容只写一次；文件超过 48KB 自动裁到 24KB */
     static void log(String msg) {
-        String ts = new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
+        long now = System.currentTimeMillis();
+        synchronized (LOG_DEDUP) {
+            Long last = LOG_DEDUP.get(msg);
+            if (last != null && now - last < LOG_DEDUP_MS) return;
+            if (LOG_DEDUP.size() > 120) LOG_DEDUP.clear();
+            LOG_DEDUP.put(msg, now);
+        }
+
+        String ts = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(new Date());
         String line = "[" + ts + "] " + msg + "\n";
         synchronized (LOG_LOCK) {
             try {
                 File f = new File(LOG_PRIVATE);
                 File p = f.getParentFile();
                 if (p != null && !p.exists()) p.mkdirs();
+                if (f.exists() && f.length() > LOG_MAX_BYTES) trim(f, LOG_KEEP_BYTES);
                 FileOutputStream fos = new FileOutputStream(f, true);
                 fos.write(line.getBytes("UTF-8"));
                 fos.close();
             } catch (Throwable ignored) {
             }
-            try {
-                FileOutputStream fos2 = new FileOutputStream(LOG_SDCARD, true);
-                fos2.write(line.getBytes("UTF-8"));
-                fos2.close();
-            } catch (Throwable ignored) {
+        }
+    }
+
+    /** 保留文件最后 keep 字节（从整行处开始） */
+    private static void trim(File f, long keep) {
+        try {
+            RandomAccessFile raf = new RandomAccessFile(f, "r");
+            long len = raf.length();
+            if (len <= keep) {
+                raf.close();
+                return;
             }
+            long skip = len - keep;
+            raf.seek(skip);
+            byte[] buf = new byte[(int) keep];
+            raf.readFully(buf);
+            raf.close();
+
+            int start = 0;
+            for (int i = 0; i < buf.length; i++) {
+                if (buf[i] == '\n') {
+                    start = i + 1;
+                    break;
+                }
+            }
+            FileOutputStream fos = new FileOutputStream(f, false);
+            fos.write(buf, start, buf.length - start);
+            fos.close();
+        } catch (Throwable ignored) {
         }
     }
 }
