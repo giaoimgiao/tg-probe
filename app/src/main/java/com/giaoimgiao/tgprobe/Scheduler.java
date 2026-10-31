@@ -473,12 +473,16 @@ public class Scheduler {
         }
     }
 
+    /** 用 UserConfig.Instance 静态数组判断，避免 getInstance(i) 给空槽造出假实例 */
     private static boolean accountActivated(int acct) {
         try {
             Class<?> uc = XposedHelpers.findClass(
                     "org.telegram.messenger.UserConfig", cl);
-            Object inst = XposedHelpers.callStaticMethod(uc, "getInstance",
-                    new Class[]{int.class}, acct);
+            Object arr = XposedHelpers.getStaticObjectField(uc, "Instance");
+            if (!(arr instanceof Object[])) return false;
+            Object[] slots = (Object[]) arr;
+            if (acct < 0 || acct >= slots.length) return false;
+            Object inst = slots[acct];
             if (inst == null) return false;
             Object v = XposedHelpers.callMethod(inst, "isClientActivated");
             return Boolean.TRUE.equals(v);
