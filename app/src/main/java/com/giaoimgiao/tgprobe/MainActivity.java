@@ -34,10 +34,6 @@ public class MainActivity extends Activity {
     private EditText etTime;
     private EditText etChat;
     private EditText etText;
-    private CheckBox cbA0;
-    private CheckBox cbA1;
-    private CheckBox cbA2;
-    private CheckBox cbA3;
     private CheckBox cbPopup;
     private EditText etWatch;
     private TextView tvStatus;
@@ -142,23 +138,8 @@ public class MainActivity extends Activity {
         etChat.setSingleLine(true);
         root.addView(etChat);
 
-        root.addView(hint("第 3 步：用哪些账号发（可多选）"));
-        LinearLayout accRow = new LinearLayout(this);
-        accRow.setOrientation(LinearLayout.HORIZONTAL);
-        cbA0 = new CheckBox(this);
-        cbA0.setText("账号 1");
-        cbA1 = new CheckBox(this);
-        cbA1.setText("账号 2");
-        cbA2 = new CheckBox(this);
-        cbA2.setText("账号 3");
-        cbA3 = new CheckBox(this);
-        cbA3.setText("账号 4");
-        accRow.addView(cbA0);
-        accRow.addView(cbA1);
-        accRow.addView(cbA2);
-        accRow.addView(cbA3);
-        root.addView(accRow);
-        root.addView(hint("「账号 1 / 2 / 3 / 4」按 Telegram 左上角切换账号的顺序排"));
+        root.addView(hint("第 3 步：账号"));
+        root.addView(hint("不用选：自动对你 Telegram 里所有已登录的账号各发一次"));
 
         root.addView(hint("第 4 步：发什么内容"));
         etText = new EditText(this);
@@ -290,11 +271,6 @@ public class MainActivity extends Activity {
         etTime.setText(j.time);
         etChat.setText(j.chat);
         etText.setText(j.text);
-        List<Integer> accts = j.accountList();
-        cbA0.setChecked(accts.contains(0));
-        cbA1.setChecked(accts.contains(1));
-        cbA2.setChecked(accts.contains(2));
-        cbA3.setChecked(accts.contains(3));
         tvStatus.setText("正在修改第 " + (index + 1) + " 个任务，改完点「添加 / 保存任务」");
     }
 
@@ -303,10 +279,6 @@ public class MainActivity extends Activity {
         etTime.setText("");
         etChat.setText("");
         etText.setText("");
-        cbA0.setChecked(true);
-        cbA1.setChecked(false);
-        cbA2.setChecked(false);
-        cbA3.setChecked(false);
         tvStatus.setText("");
     }
 
@@ -338,16 +310,8 @@ public class MainActivity extends Activity {
         if (chat.startsWith("@")) chat = chat.substring(1);
         if (text.trim().isEmpty()) text = "🎁 每日签到";
 
-        StringBuilder acc = new StringBuilder();
-        if (cbA0.isChecked()) acc.append("0,");
-        if (cbA1.isChecked()) acc.append("1,");
-        if (cbA2.isChecked()) acc.append("2,");
-        if (cbA3.isChecked()) acc.append("3,");
-        if (acc.length() == 0) {
-            Toast.makeText(this, "请至少勾选一个账号", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        String accounts = acc.substring(0, acc.length() - 1);
+        // 账号留空 = 自动对所有已登录账号发送
+        String accounts = "";
 
         Config.Job j = new Config.Job();
         j.time = time;
