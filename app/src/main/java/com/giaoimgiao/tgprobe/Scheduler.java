@@ -174,28 +174,47 @@ public class Scheduler {
         };
         DISPATCHED.add(r);
         H.postDelayed(r, Math.max(0, delay));
-        Main.log("[sched] " + job.time + " @" + job.chat + " 将在 " + (delay / 1000) + " 秒后执行");
+        String when = delay <= 0 ? "立即执行（今天还没签）" : (delay / 1000) + " 秒后";
+        Main.log("[sched] " + (job.time.isEmpty() ? "不限时间" : job.time + " 之后")
+                + " @" + job.chat + " → " + when);
     }
 
-    /** 距下一次该执行还有多少毫秒 */
+    /** 距下一次可执行还有多少毫秒（"当天额度"语义，不是精确时刻） */
     private static long delayOf(Config.Job job) {
         long now = System.currentTimeMillis();
-        int[] hm = parseHm(job.time);
-        if (hm == null) return Long.MAX_VALUE / 4;
 
+        // 今天还有没签的账号 → 看是否已过"最早允许时间"，过了就立刻发
+        if (!todoAccounts(job).isEmpty()) {
+            long notBefore = notBefore(job);
+            if (now >= notBefore) return 0;
+            return notBefore - now;
+        }
+
+        // 今天已完成 → 排到明天（明天零点，或明天的最早允许时间）
+        Calendar t = Calendar.getInstance();
+        t.add(Calendar.DAY_OF_MONTH, 1);
+        t.set(Calendar.HOUR_OF_DAY, 0);
+        t.set(Calendar.MINUTE, 0);
+        t.set(Calendar.SECOND, 0);
+        t.set(Calendar.MILLISECOND, 0);
+        int[] hm = parseHm(job.time);
+        if (hm != null) {
+            t.set(Calendar.HOUR_OF_DAY, hm[0]);
+            t.set(Calendar.MINUTE, hm[1]);
+        }
+        return t.getTimeInMillis() - now;
+    }
+
+    /** 今天最早允许发送的时刻；未设置时间 = 0（不限制） */
+    private static long notBefore(Config.Job job) {
+        int[] hm = parseHm(job.time);
+        if (hm == null) return 0;
         Calendar t = Calendar.getInstance();
         t.set(Calendar.HOUR_OF_DAY, hm[0]);
         t.set(Calendar.MINUTE, hm[1]);
         t.set(Calendar.SECOND, 0);
         t.set(Calendar.MILLISECOND, 0);
-        long todayAt = t.getTimeInMillis();
-
-        if (now < todayAt) return todayAt - now;
-
-        // 已过点：今天还有没做完的账号 → 立刻补做；否则排到明天
-        if (!todoAccounts(job).isEmpty()) return 0;
-        t.add(Calendar.DAY_OF_MONTH, 1);
-        return t.getTimeInMillis() - now;
+        return t.getTimeInMillis();
     }
 
     private static List<Integer> todoAccounts(Config.Job job) {
