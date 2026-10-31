@@ -273,7 +273,7 @@ public class Scheduler {
         Config c = loadConfig();
         if (!c.enabled || !c.signEnabled) return;
 
-        List<Acc> todo = todoAccounts(job);
+        List<Integer> todo = todoAccounts(job);
         if (todo.isEmpty()) {
             schedule(job);
             return;
