@@ -170,6 +170,17 @@ public class AutoTask {
             return false;
         }
 
+        // 发送前记录该 acct 实际对应的账号, 便于核对索引
+        try {
+            Object uc = XposedHelpers.callStaticMethod(
+                    XposedHelpers.findClass("org.telegram.messenger.UserConfig", cl),
+                    "getInstance", new Class[]{int.class}, acct);
+            Object cu = uc == null ? null : XposedHelpers.callMethod(uc, "getCurrentUser");
+            Main.log("[sched] 使用账号 acct=" + acct + " uid="
+                    + (cu == null ? "?" : String.valueOf(XposedHelpers.getLongField(cu, "id"))));
+        } catch (Throwable ignored) {
+        }
+
         Class<?> acInstCls = XposedHelpers.findClass("org.telegram.messenger.AccountInstance", cl);
         Object acInst = XposedHelpers.callStaticMethod(acInstCls, "getInstance", new Class[]{int.class}, acct);
         Object smh = XposedHelpers.callMethod(acInst, "getSendMessagesHelper");
