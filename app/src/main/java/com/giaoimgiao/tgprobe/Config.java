@@ -49,12 +49,8 @@ public class Config {
         }
 
         public String accountsLabel() {
-            StringBuilder sb = new StringBuilder();
-            for (Integer i : accountList()) {
-                if (sb.length() > 0) sb.append(',');
-                sb.append(i);
-            }
-            return sb.toString();
+            if (accounts == null || accounts.trim().isEmpty()) return "全部已登录账号";
+            return accounts;
         }
     }
 
@@ -64,7 +60,7 @@ public class Config {
         for (Job j : jobs) {
             if (sb.length() > 0) sb.append('\n');
             sb.append(j.time.isEmpty() ? "-" : j.time).append('|').append(j.chat).append('|')
-                    .append(j.accountsLabel()).append('|').append(j.text);
+                    .append(j.accounts == null ? "" : j.accounts).append('|').append(j.text);
         }
         return sb.toString();
     }
