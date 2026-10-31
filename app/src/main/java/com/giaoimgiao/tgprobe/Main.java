@@ -155,7 +155,7 @@ public class Main implements IXposedHookLoadPackage {
                                     + " contact=" + contact + " mutual=" + mutual);
 
                             String acctInfo = buildAccountList(lpparam.classLoader);
-                            log("账号: " + acctInfo.replace('\n', ' '));
+                            log(acctInfo.replace('\n', ' '));
                             showPanel((Activity) actObj, acctInfo, id, username, phone, contact, mutual, bot);
                         } catch (Throwable ignored) {
                         }
